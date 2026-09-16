@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+export type TriggerMode = "both" | "turn" | "typing";
+
 export interface GhostTextConfig {
 	enabled: boolean;
 	model: string;
@@ -11,11 +13,15 @@ export interface GhostTextConfig {
 	maxTokens: number;
 	timeoutMs: number;
 	debounceMs: number;
+	minChars: number;
+	triggerMode: TriggerMode;
 }
 
 const DEFAULT_MODEL = "gemini-3.1-flash-lite";
 const DEFAULT_TIMEOUT_MS = 2000;
-const DEFAULT_DEBOUNCE_MS = 350;
+const DEFAULT_DEBOUNCE_MS = 700;
+const DEFAULT_MIN_CHARS = 3;
+const DEFAULT_TRIGGER_MODE: TriggerMode = "both";
 
 function resolveAgentDir(): string {
 	if (process.env.PI_AGENT_DIR) return process.env.PI_AGENT_DIR;
@@ -32,6 +38,8 @@ export function loadConfig(): GhostTextConfig {
 	let maxTokens = 30;
 	let timeoutMs = DEFAULT_TIMEOUT_MS;
 	let debounceMs = DEFAULT_DEBOUNCE_MS;
+	let minChars = DEFAULT_MIN_CHARS;
+	let triggerMode = DEFAULT_TRIGGER_MODE;
 
 	const agentDir = resolveAgentDir();
 
@@ -66,6 +74,16 @@ export function loadConfig(): GhostTextConfig {
 				}
 				if (typeof ghostSettings.debounceMs === "number") {
 					debounceMs = ghostSettings.debounceMs;
+				}
+				if (typeof ghostSettings.minChars === "number") {
+					minChars = ghostSettings.minChars;
+				}
+				if (
+					ghostSettings.triggerMode === "both" ||
+					ghostSettings.triggerMode === "turn" ||
+					ghostSettings.triggerMode === "typing"
+				) {
+					triggerMode = ghostSettings.triggerMode;
 				}
 			}
 		}
@@ -105,6 +123,20 @@ export function loadConfig(): GhostTextConfig {
 	if (process.env.PI_GHOST_TEXT_MODEL) {
 		model = process.env.PI_GHOST_TEXT_MODEL;
 	}
+	if (process.env.PI_GHOST_TEXT_TRIGGER_MODE) {
+		const m = process.env.PI_GHOST_TEXT_TRIGGER_MODE.toLowerCase();
+		if (m === "both" || m === "turn" || m === "typing") {
+			triggerMode = m;
+		}
+	}
+	if (process.env.PI_GHOST_TEXT_DEBOUNCE_MS) {
+		const val = Number.parseInt(process.env.PI_GHOST_TEXT_DEBOUNCE_MS, 10);
+		if (!Number.isNaN(val) && val > 0) debounceMs = val;
+	}
+	if (process.env.PI_GHOST_TEXT_MIN_CHARS) {
+		const val = Number.parseInt(process.env.PI_GHOST_TEXT_MIN_CHARS, 10);
+		if (!Number.isNaN(val) && val > 0) minChars = val;
+	}
 	if (process.env.PI_GHOST_TEXT_ENABLED !== undefined) {
 		enabled = process.env.PI_GHOST_TEXT_ENABLED !== "false";
 	}
@@ -126,5 +158,7 @@ export function loadConfig(): GhostTextConfig {
 		maxTokens,
 		timeoutMs,
 		debounceMs,
+		minChars,
+		triggerMode,
 	};
 }

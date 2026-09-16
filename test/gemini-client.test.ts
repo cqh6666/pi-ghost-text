@@ -21,6 +21,8 @@ describe("GeminiPredictorClient", () => {
 			maxTokens: 20,
 			timeoutMs: 1000,
 			debounceMs: 300,
+			minChars: 3,
+			triggerMode: "both",
 		});
 
 		const pred1 = await client.predict({
@@ -44,6 +46,8 @@ describe("GeminiPredictorClient", () => {
 			maxTokens: 20,
 			timeoutMs: 1000,
 			debounceMs: 300,
+			minChars: 3,
+			triggerMode: "both",
 		});
 
 		const res = await client.predict({ lastAssistantMessage: "done" });

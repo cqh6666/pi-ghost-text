@@ -56,6 +56,11 @@ export default function (pi: ExtensionAPI): void {
 		description: "Specify predictor model for ghost text (e.g. gemini-3.1-flash-lite)",
 	});
 
+	pi.registerFlag("ghost-text-mode", {
+		type: "string",
+		description: "Trigger mode for ghost text (both | turn | typing)",
+	});
+
 	function cancelOngoing(): void {
 		if (typingTimer) {
 			clearTimeout(typingTimer);
@@ -70,7 +75,19 @@ export default function (pi: ExtensionAPI): void {
 	function handleUserTyping(text: string): void {
 		cancelOngoing();
 
-		if (!config.enabled || !text.trim()) {
+		// Check if enabled or if typing trigger is disabled
+		if (!config.enabled || config.triggerMode === "turn") {
+			return;
+		}
+
+		// Don't predict for slash commands or file autocomplete
+		const trimmed = text.trim();
+		if (trimmed.startsWith("/") || trimmed.startsWith("@")) {
+			return;
+		}
+
+		// Enforce minimum character threshold to avoid predicting on single characters
+		if (trimmed.length < config.minChars) {
 			return;
 		}
 
@@ -105,6 +122,8 @@ export default function (pi: ExtensionAPI): void {
 				const statusMsg = [
 					`**Ghost Text Copilot**: ${current.enabled ? "✓ Enabled" : "✗ Disabled"}`,
 					`• Model: \`${current.model}\``,
+					`• Trigger Mode: \`${current.triggerMode}\` (both | turn | typing)`,
+					`• Min Chars: \`${current.minChars}\``,
 					`• Base URL: \`${current.baseUrl || "None"}\``,
 					`• API Key: \`${current.apiKey ? current.apiKey.slice(0, 8) + "..." : "None"}\``,
 					`• Timeout: \`${current.timeoutMs}ms\``,
@@ -113,6 +132,7 @@ export default function (pi: ExtensionAPI): void {
 					"Commands:",
 					"  `/ghost-text on` - Enable ghost text",
 					"  `/ghost-text off` - Disable ghost text",
+					"  `/ghost-text mode <both|turn|typing>` - Set trigger mode",
 					"  `/ghost-text model <name>` - Set predictor model",
 				].join("\n");
 				ctx.ui.notify(statusMsg, "info");
@@ -147,7 +167,21 @@ export default function (pi: ExtensionAPI): void {
 				return;
 			}
 
-			ctx.ui.notify("Unknown subcommand. Use `/ghost-text status`, `on`, `off`, or `model <name>`", "warning");
+			if (sub.startsWith("mode ")) {
+				const newMode = sub.slice(5).trim().toLowerCase();
+				if (newMode !== "both" && newMode !== "turn" && newMode !== "typing") {
+					ctx.ui.notify("Invalid mode. Use `both`, `turn` (only after agent finishes), or `typing` (only while typing)", "error");
+					return;
+				}
+				config.triggerMode = newMode;
+				predictor.updateConfig({ triggerMode: newMode });
+				cancelOngoing();
+				activeEditor?.clearGhostText();
+				ctx.ui.notify(`Ghost text trigger mode set to: ${newMode}`, "info");
+				return;
+			}
+
+			ctx.ui.notify("Unknown subcommand. Use `/ghost-text status`, `on`, `off`, `mode <both|turn|typing>`, or `model <name>`", "warning");
 		},
 	});
 
@@ -160,6 +194,15 @@ export default function (pi: ExtensionAPI): void {
 		if (typeof modelOverride === "string" && modelOverride.trim().length > 0) {
 			config.model = modelOverride.trim();
 			predictor.updateConfig({ model: config.model });
+		}
+
+		const modeOverride = pi.getFlag("ghost-text-mode");
+		if (
+			typeof modeOverride === "string" &&
+			(modeOverride === "both" || modeOverride === "turn" || modeOverride === "typing")
+		) {
+			config.triggerMode = modeOverride;
+			predictor.updateConfig({ triggerMode: modeOverride });
 		}
 
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
@@ -176,7 +219,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_end", async (event, _ctx) => {
-		if (!config.enabled || !activeEditor) return;
+		if (!config.enabled || config.triggerMode === "typing" || !activeEditor) return;
 
 		// Extract context from recent messages
 		const userMsgs = event.messages.filter((m: any) => m.role === "user");
