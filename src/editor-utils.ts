@@ -61,7 +61,7 @@ export function injectGhostTextIntoLine(
 	// Determine how much visible width is available for ghost text + hint
 	const availableWidth = leadingSpacesCount;
 
-	const showHint = options?.showHint ?? true;
+	const showHint = options?.showHint ?? false;
 	const hintText = showHint ? " (Tab)" : "";
 	const hintWidth = visibleWidth(hintText);
 
