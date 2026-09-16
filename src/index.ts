@@ -51,6 +51,11 @@ export default function (pi: ExtensionAPI): void {
 		default: false,
 	});
 
+	pi.registerFlag("ghost-text-model", {
+		type: "string",
+		description: "Specify predictor model for ghost text (e.g. gemini-3.1-flash-lite)",
+	});
+
 	function cancelOngoing(): void {
 		if (typingTimer) {
 			clearTimeout(typingTimer);
@@ -149,6 +154,12 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		if (pi.getFlag("no-ghost-text") || !ctx.hasUI) {
 			return;
+		}
+
+		const modelOverride = pi.getFlag("ghost-text-model");
+		if (typeof modelOverride === "string" && modelOverride.trim().length > 0) {
+			config.model = modelOverride.trim();
+			predictor.updateConfig({ model: config.model });
 		}
 
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => {

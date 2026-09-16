@@ -24,15 +24,59 @@ function resolveAgentDir(): string {
 }
 
 export function loadConfig(): GhostTextConfig {
-	let baseUrl = process.env.PI_GHOST_TEXT_BASE_URL || process.env.GEMINI_BASE_URL || "";
-	let apiKey = process.env.PI_GHOST_TEXT_API_KEY || process.env.GEMINI_API_KEY || "";
-	let model = process.env.PI_GHOST_TEXT_MODEL || DEFAULT_MODEL;
-	let enabled = process.env.PI_GHOST_TEXT_ENABLED !== "false";
+	let baseUrl = "";
+	let apiKey = "";
+	let model = DEFAULT_MODEL;
+	let enabled = true;
+	let temperature = 0.2;
+	let maxTokens = 30;
+	let timeoutMs = DEFAULT_TIMEOUT_MS;
+	let debounceMs = DEFAULT_DEBOUNCE_MS;
 
-	// If missing baseUrl or apiKey, attempt reading from ~/.pi/agent/models.json
+	const agentDir = resolveAgentDir();
+
+	// 1. Read settings.json if present
+	try {
+		const settingsPath = path.join(agentDir, "settings.json");
+		if (fs.existsSync(settingsPath)) {
+			const raw = fs.readFileSync(settingsPath, "utf-8");
+			const parsed = JSON.parse(raw);
+			const ghostSettings = parsed?.ghostText;
+			if (ghostSettings && typeof ghostSettings === "object") {
+				if (typeof ghostSettings.model === "string" && ghostSettings.model) {
+					model = ghostSettings.model;
+				}
+				if (typeof ghostSettings.enabled === "boolean") {
+					enabled = ghostSettings.enabled;
+				}
+				if (typeof ghostSettings.baseUrl === "string" && ghostSettings.baseUrl) {
+					baseUrl = ghostSettings.baseUrl;
+				}
+				if (typeof ghostSettings.apiKey === "string" && ghostSettings.apiKey) {
+					apiKey = ghostSettings.apiKey;
+				}
+				if (typeof ghostSettings.temperature === "number") {
+					temperature = ghostSettings.temperature;
+				}
+				if (typeof ghostSettings.maxTokens === "number") {
+					maxTokens = ghostSettings.maxTokens;
+				}
+				if (typeof ghostSettings.timeoutMs === "number") {
+					timeoutMs = ghostSettings.timeoutMs;
+				}
+				if (typeof ghostSettings.debounceMs === "number") {
+					debounceMs = ghostSettings.debounceMs;
+				}
+			}
+		}
+	} catch {
+		// Ignore read errors
+	}
+
+	// 2. Read from models.json if baseUrl or apiKey not provided yet
 	if (!baseUrl || !apiKey) {
 		try {
-			const modelsPath = path.join(resolveAgentDir(), "models.json");
+			const modelsPath = path.join(agentDir, "models.json");
 			if (fs.existsSync(modelsPath)) {
 				const raw = fs.readFileSync(modelsPath, "utf-8");
 				const parsed = JSON.parse(raw);
@@ -51,6 +95,20 @@ export function loadConfig(): GhostTextConfig {
 		}
 	}
 
+	// 3. Environment variables take highest precedence
+	if (process.env.PI_GHOST_TEXT_BASE_URL || process.env.GEMINI_BASE_URL) {
+		baseUrl = (process.env.PI_GHOST_TEXT_BASE_URL || process.env.GEMINI_BASE_URL)!;
+	}
+	if (process.env.PI_GHOST_TEXT_API_KEY || process.env.GEMINI_API_KEY) {
+		apiKey = (process.env.PI_GHOST_TEXT_API_KEY || process.env.GEMINI_API_KEY)!;
+	}
+	if (process.env.PI_GHOST_TEXT_MODEL) {
+		model = process.env.PI_GHOST_TEXT_MODEL;
+	}
+	if (process.env.PI_GHOST_TEXT_ENABLED !== undefined) {
+		enabled = process.env.PI_GHOST_TEXT_ENABLED !== "false";
+	}
+
 	// Normalize baseUrl
 	if (baseUrl && !baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
 		baseUrl = `http://${baseUrl}`;
@@ -64,9 +122,9 @@ export function loadConfig(): GhostTextConfig {
 		model,
 		baseUrl,
 		apiKey,
-		temperature: 0.2,
-		maxTokens: 30,
-		timeoutMs: DEFAULT_TIMEOUT_MS,
-		debounceMs: DEFAULT_DEBOUNCE_MS,
+		temperature,
+		maxTokens,
+		timeoutMs,
+		debounceMs,
 	};
 }
