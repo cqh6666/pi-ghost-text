@@ -1,152 +1,178 @@
-import { CustomEditor } from "@earendil-works/pi-coding-agent";
-import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
+import { CustomEditor, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { visibleWidth, type EditorOptions, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { injectGhostTextIntoLine } from "./editor-utils.ts";
+import { isPathInput } from "./input.ts";
+
+export interface GhostTextOptions extends EditorOptions {
+	styleGhost?: (text: string) => string;
+}
 
 export interface GhostTextCallbacks {
 	onAccept?: (acceptedText: string) => void;
 	onDismiss?: () => void;
 	onTextChanged?: (text: string) => void;
+	onInvalidate?: () => void;
 }
 
 export class GhostTextEditor extends CustomEditor {
 	private ghostText: string | null = null;
+	private ghostInput = "";
+	private visible = false;
+	private ghostKeybindings: KeybindingsManager;
 	private callbacks?: GhostTextCallbacks;
+	private styleGhost?: (text: string) => string;
 
-	constructor(
-		tui: TUI,
-		theme: EditorTheme,
-		keybindings: any,
-		options?: EditorOptions,
-		callbacks?: GhostTextCallbacks
-	) {
+	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: GhostTextOptions, callbacks?: GhostTextCallbacks) {
 		super(tui, theme, keybindings, options);
+		this.ghostKeybindings = keybindings;
+		this.callbacks = callbacks;
+		this.styleGhost = options?.styleGhost;
+
+		const originalStart = (this as any).startAutocompleteRequest;
+		if (typeof originalStart === "function") {
+			(this as any).startAutocompleteRequest = (...args: any[]) => {
+				this.clearGhostText();
+				this.callbacks?.onInvalidate?.();
+				return originalStart.apply(this, args);
+			};
+		}
+	}
+
+	setCallbacks(callbacks: GhostTextCallbacks): void {
 		this.callbacks = callbacks;
 	}
 
-	public setCallbacks(callbacks: GhostTextCallbacks): void {
-		this.callbacks = callbacks;
-	}
-
-	public setGhostText(text: string | null): void {
-		if (this.ghostText === text) return;
-		this.ghostText = text && text.trim().length > 0 ? text : null;
+	setGhostText(text: string | null): void {
+		const normalized = text ? text.replaceAll("\t", "    ") : null;
+		this.ghostText = normalized && visibleWidth(normalized) > 0 ? normalized : null;
+		this.ghostInput = this.getText();
+		this.visible = false;
 		this.tui.requestRender();
 	}
 
-	public getGhostText(): string | null {
+	getGhostText(): string | null {
 		return this.ghostText;
 	}
 
-	public clearGhostText(): void {
+	clearGhostText(): void {
 		this.setGhostText(null);
 	}
 
-	public acceptGhostText(): boolean {
-		if (!this.ghostText) return false;
-		const toInsert = this.ghostText;
-		this.ghostText = null;
+	isAtEnd(): boolean {
+		const cursor = this.getCursor();
+		const lines = this.getLines();
+		return cursor.line === lines.length - 1 && cursor.col === (lines[cursor.line]?.length ?? 0);
+	}
 
-		if (this.getText().length === 0) {
-			this.setText(toInsert);
-		} else {
-			this.insertTextAtCursor(toInsert);
+	private isAutocompletePending(): boolean {
+		return Boolean((this as any).autocompleteAbort || (this as any).autocompleteDebounceTimer);
+	}
+
+	canSuggest(): boolean {
+		return this.isAtEnd() && !this.isShowingAutocomplete() && !this.isAutocompletePending() && !isPathInput(this.getText());
+	}
+
+	private canAccept(): boolean {
+		return this.visible && !!this.ghostText && this.canSuggest() && this.getText() === this.ghostInput;
+	}
+
+	acceptGhostText(partial = false): boolean {
+		if (!this.canAccept() || !this.ghostText) return false;
+		const suffix = this.ghostText;
+		let text = suffix;
+		if (partial) {
+			text = "";
+			for (const segment of new Intl.Segmenter(undefined, { granularity: "word" }).segment(suffix)) {
+				text += segment.segment;
+				if (segment.isWordLike) break;
+			}
 		}
-
-		this.tui.requestRender();
-		this.callbacks?.onAccept?.(toInsert);
+		this.clearGhostText();
+		this.insertTextAtCursor(text);
+		this.setGhostText(suffix.slice(text.length));
+		this.callbacks?.onAccept?.(text);
 		return true;
 	}
 
-	public dismissGhostText(): boolean {
-		if (!this.ghostText) return false;
-		this.ghostText = null;
-		this.tui.requestRender();
+	dismissGhostText(): boolean {
+		const hadSuggestion = !!this.ghostText;
+		this.clearGhostText();
 		this.callbacks?.onDismiss?.();
-		return true;
+		return hadSuggestion;
 	}
 
-	handleInput(data: string): void {
-		// 1. If native autocomplete list is showing, let parent handle it with highest priority
+	override setText(text: string): void {
+		super.setText(text);
+		this.clearGhostText();
+		this.callbacks?.onTextChanged?.(this.getText());
+	}
+
+	override handleInput(data: string): void {
 		if (this.isShowingAutocomplete()) {
+			this.clearGhostText();
+			this.callbacks?.onInvalidate?.();
 			super.handleInput(data);
 			return;
 		}
 
-		// 2. Tab key accepts ghost text if present
-		if ((data === "\t" || data === "\x09") && this.ghostText) {
+		if (this.ghostKeybindings.matches(data, "app.interrupt")) {
+			const wasVisible = this.canAccept();
+			this.dismissGhostText();
+			if (wasVisible) return;
+		}
+
+		if (this.canAccept() && (this.ghostKeybindings.matches(data, "tui.input.tab") || this.ghostKeybindings.matches(data, "tui.editor.cursorRight"))) {
 			this.acceptGhostText();
 			return;
 		}
 
-		// 3. Right Arrow key accepts ghost text if cursor is at the end of input
-		if ((data === "\x1b[C" || data === "\x1bOC") && this.ghostText) {
-			const cursor = this.getCursor();
-			const lines = this.getLines();
-			const isAtEnd =
-				cursor.line === lines.length - 1 &&
-				cursor.col === (lines[cursor.line]?.length ?? 0);
-			if (isAtEnd) {
-				this.acceptGhostText();
-				return;
-			}
-		}
-
-		// 4. Escape dismisses ghost text
-		if (data === "\x1b" && this.ghostText) {
-			this.dismissGhostText();
+		if (this.canAccept() && this.ghostKeybindings.matches(data, "tui.editor.cursorWordRight")) {
+			this.acceptGhostText(true);
 			return;
 		}
 
-		// 5. Delegate to CustomEditor for normal editing and app keybindings
-		const prevText = this.getText();
+		const before = this.getText();
 		super.handleInput(data);
-		const newText = this.getText();
-
-		if (newText !== prevText) {
-			// If user typed forward matching the start of current ghost text, shrink ghost text
-			if (
-				this.ghostText &&
-				newText.startsWith(prevText) &&
-				newText.length > prevText.length
-			) {
-				const typedChar = newText.slice(prevText.length);
-				if (this.ghostText.startsWith(typedChar)) {
-					this.ghostText = this.ghostText.slice(typedChar.length) || null;
-					this.tui.requestRender();
-					return;
-				}
+		if (this.ghostKeybindings.matches(data, "tui.editor.undo")) {
+			this.dismissGhostText();
+			return;
+		}
+		const after = this.getText();
+		if (!this.isAtEnd()) {
+			this.clearGhostText();
+			this.callbacks?.onInvalidate?.();
+		} else if (after !== before) {
+			const typed = after.startsWith(before) ? after.slice(before.length) : "";
+			if (typed && this.ghostText?.startsWith(typed) && this.ghostInput === before) {
+				this.ghostText = this.ghostText.slice(typed.length) || null;
+				this.ghostInput = after;
+				this.visible = false;
+				this.tui.requestRender();
+			} else {
+				this.clearGhostText();
 			}
-
-			// Text changed and diverged from ghost text: clear current ghost text and notify
-			this.ghostText = null;
-			this.callbacks?.onTextChanged?.(newText);
+			this.callbacks?.onTextChanged?.(after);
 		}
 	}
 
-	render(width: number): string[] {
+	override invalidate(): void {
+		super.invalidate();
+		this.visible = false;
+	}
+
+	override render(width: number): string[] {
 		const lines = super.render(width);
-		if (!this.ghostText || this.isShowingAutocomplete()) {
-			return lines;
-		}
-
-		// Only show ghost text when cursor is at the very end of input
-		const cursor = this.getCursor();
-		const allLines = this.getLines();
-		const isAtEnd =
-			cursor.line === allLines.length - 1 &&
-			cursor.col === (allLines[cursor.line]?.length ?? 0);
-
-		if (!isAtEnd) {
-			return lines;
-		}
-
+		this.visible = false;
+		if (!this.ghostText || !this.canSuggest() || this.getText() !== this.ghostInput) return lines;
 		for (let i = 0; i < lines.length; i++) {
-			if (lines[i].includes("\x1b[7m \x1b[0m")) {
-				lines[i] = injectGhostTextIntoLine(lines[i], this.ghostText, width);
+			const before = lines[i]!;
+			const after = injectGhostTextIntoLine(before, this.ghostText, width, { styleGhost: this.styleGhost });
+			if (after !== before) {
+				lines[i] = after;
+				this.visible = true;
 				break;
 			}
 		}
-
 		return lines;
 	}
 }

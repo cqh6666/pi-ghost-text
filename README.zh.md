@@ -1,79 +1,87 @@
-# pi-ghost-text 👻
+# Pi Ghost Text
 
-为 [Pi Coding Agent](https://github.com/earendil-works/pi-mono) 打造的智能幽灵文本（Ghost Text）行内提示插件，默认由 **Gemini Flash Lite** 极速驱动。
+为 Pi 编码代理提供输入续写和下一条消息建议，通过已配置的 OpenAI 兼容预测接口生成。[English](./README.md)
 
-类似于 GitHub Copilot 或 Fish / Zsh Shell 的自动推测：每轮 Agent 输出完毕后，或当你正在输入时，它会智能预测你的下一步意图并以暗灰色显示在输入框光标后。按 <kbd>Tab</kbd> 一键采纳，按 <kbd>Esc</kbd> 忽略。
-
----
-
-## ✨ 特性
-
-- ⚡ **零抖动行内幽灵文本**：紧跟光标后方渲染暗灰色纯净文本，严格保持终端可见宽度，绝不折行、绝不抖动。
-- 🤖 **Gemini Flash Lite 极速驱动**：毫秒级响应，开销微乎其微。自动读取本地已配置的 Gemini 渠道凭据。
-- 🎯 **灵活低频防抖机制**：
-  - **轮末意图推测**：Agent 处理完成（如测试通过、Git 改动产生、报错需修复）后，自动预判下一步操作（如 *"运行单元测试"*、*"查看 git diff"*、*"提交代码"* 等）。
-  - **防抖打字续写**：打字停顿超过 **700ms** 且字符数达到 **3 字以上**才触发，绝不在单字母或构思时乱刷请求。
-  - **智能忽略命令**：以 `/` 或 `@` 开头时自动跳过模型调用，走原生本地补全。
-  - **顺打零请求收缩**：顺着幽灵文本输入字符时，幽灵文本在本地逐字精准收缩，不发任何网络请求。
-- ⌨️ **丝滑按键交互**：
-  - <kbd>Tab</kbd> 或 行尾 <kbd>→</kbd>：一键采纳幽灵文本。
-  - <kbd>Esc</kbd>：清除并忽略幽灵文本。
-  - 完美兼容原生 `/` 斜杠命令与 `@` 文件补全菜单（下拉菜单呼出时优先处理菜单）。
-- 🛡️ **即时中断与智能降级**：用户敲击按键即瞬间 `abort()` 后台请求，绝不卡手；断网或超时（2s）自动走本地启发式规则，零风险保障。
-
----
-
-## 🚀 安装与配置
-
-### 1. 安装插件
+## 安装
 
 ```bash
-pi install ../../githubProjects/pi-ghost-text
+pi install /absolute/path/to/pi-ghost-text
 ```
 
-### 2. 渠道与模型配置
+也可仅在一次会话中加载：
 
-插件默认会自动扫描 `~/.pi/agent/models.json` 中的 `gemini` 渠道信息，开箱即用。
+```bash
+pi -e /absolute/path/to/pi-ghost-text/src/index.ts
+```
 
-也可以在 `~/.pi/agent/settings.json` 中配置：
+配置 `PI_GHOST_TEXT_BASE_URL` 和 `PI_GHOST_TEXT_API_KEY`，或在 Pi 的 agent `settings.json` 中设置 `ghostText.baseUrl`、`ghostText.apiKey`。也可读取 `models.json` 的 `gemini` provider。接口必须支持 `POST /chat/completions`；Gemini 原生接口并非 OpenAI 兼容接口。
+
+## 输入操作
+
+- `Tab` 或 `→`：采纳整段可见建议。
+- `Alt+→`、`Ctrl+→` 或 `Alt+F`：采纳一个词，保留剩余建议。中文使用分词，而非按空格切分。
+- `Esc`：忽略可见建议。没有可见建议时，保留 Pi 原有的中断行为。
+- 输入与建议前缀一致时，在本地缩短建议；退格可立即恢复缓存中的续写。
+- 光标离开末尾、原生补全打开、对话或模型变化、提交输入及结束会话时，会使建议或待处理请求失效。
+
+按键跟随 Pi 的配置动作：`tui.input.tab`、`tui.editor.cursorRight`、`tui.editor.cursorWordRight`、`app.interrupt` 和 `tui.editor.undo`，兼容 Kitty 键盘编码。采纳是一次可撤销的操作；撤销使用 Pi 配置的按键，默认 `Ctrl+-`。
+
+仅当光标位于输入末尾、右侧空间足够显示预览时，才允许采纳。预览过长时会用省略号显示，整段采纳仍插入完整建议；需要更细的控制时使用按词采纳。颜色跟随当前主题。
+
+原生斜杠命令、`@` 引用和明确的路径输入优先，不触发模型补全。版本号、小数等普通输入不会仅因包含 `.` 而被屏蔽。
+
+## 命令
+
+```text
+/ghost-text status
+/ghost-text on
+/ghost-text off
+/ghost-text mode both
+/ghost-text mode turn
+/ghost-text mode typing
+/ghost-text model gemini-3.1-flash-lite
+/ghost-text debounce 400
+/ghost-text save
+```
+
+命令默认只影响当前会话。`save` 显式把当前偏好保存到 Pi 的 agent `settings.json`，保留其他设置及原有凭据，不把当前 API key 或接口覆盖值复制进去。环境变量及命令行参数仍优先于已保存的偏好。
+
+`status` 显示不可用原因、请求数、缓存命中数和最近一次请求耗时，不显示密钥。缺少凭据、请求失败、超时或取消时，不显示建议；不再生成本地规则兜底建议。
+
+## 配置
+
 ```json
 {
   "ghostText": {
+    "enabled": true,
     "model": "gemini-3.1-flash-lite",
     "triggerMode": "both",
-    "debounceMs": 700,
-    "minChars": 3
+    "debounceMs": 400,
+    "minChars": 3,
+    "timeoutMs": 2000,
+    "maxTokens": 30,
+    "temperature": 0.2
   }
 }
 ```
 
-如需环境变量自定义：
+`turn` 在代理完成本轮工作后预测下一条消息；`typing` 在停止输入后续写；`both` 同时启用。所有模式都会更新对话及工具上下文。
+
+内存缓存最多保留 32 条建议，30 秒过期。对话或预测设置改变、忽略或采纳建议时清空，不写入磁盘。
+
+环境变量：`PI_GHOST_TEXT_ENABLED`、`PI_GHOST_TEXT_MODEL`、`PI_GHOST_TEXT_BASE_URL`、`PI_GHOST_TEXT_API_KEY`、`PI_GHOST_TEXT_TRIGGER_MODE`、`PI_GHOST_TEXT_DEBOUNCE_MS`、`PI_GHOST_TEXT_MIN_CHARS`。也支持 `GEMINI_BASE_URL`、`GEMINI_API_KEY` 作为凭据来源。
+
+命令行参数：`--no-ghost-text`、`--ghost-text-model <name>`、`--ghost-text-mode <both|turn|typing>`。
+
+## 编辑器兼容
+
+行内建议需要使用自定义编辑器。如果其他扩展已经接管编辑器，Ghost Text 会暂停并在 `status` 提示，不替换它。如果其他编辑器随后接管，预测也会暂停；关闭 Ghost Text 不会移除该编辑器。这能保护 Vim 等编辑器，但不代表两个编辑器可以叠加。启用行内建议前，应关闭 Ghost Text 或另一自定义编辑器。仅 TUI 模式安装编辑器。
+
+## 开发
+
 ```bash
-export PI_GHOST_TEXT_MODEL="gemini-3.1-flash-lite"
-export PI_GHOST_TEXT_TRIGGER_MODE="both"  # both | turn | typing
-export GEMINI_API_KEY="sk-..."
-export GEMINI_BASE_URL="http://139.199.61.133/v1"
+npm install --ignore-scripts
+npm run check
 ```
 
-### 3. 会话内置命令
-
-- `/ghost-text status` — 查看当前配置状态、模型、触发模式与连接情况
-- `/ghost-text mode <both|turn|typing>` — 调整触发模式：
-  - `turn`: 仅在 Agent 每轮回答完毕后推测下一步（最省资源，每轮固定 1 次）
-  - `typing`: 仅在打字停顿思考时续写
-  - `both`: 轮末建议 + 打字续写（默认）
-- `/ghost-text on` — 开启幽灵文本提示
-- `/ghost-text off` — 暂时关闭幽灵文本提示
-- `/ghost-text model <name>` — 切换预测小模型（如 `gemini-3.1-flash-lite` 或 `gemini-3.8-flash-high`）
-
-### 4. CLI 命令行参数
-
-- `pi --no-ghost-text` — 本次启动不加载幽灵文本提示。
-- `pi --ghost-text-mode <both|turn|typing>` — 指定本次启动的触发模式。
-- `pi --ghost-text-model <model>` — 指定本次启动的预测模型。
-
----
-
-## 📄 开源许可
-
-MIT
+检查包括 TypeScript 和隔离测试，使用模拟接口，不需要真实模型凭据。延迟测试比较 300、400、700ms 防抖配合模拟 120ms 请求的表现，不代表真实服务的网络延迟。

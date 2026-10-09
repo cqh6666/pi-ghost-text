@@ -1,3 +1,4 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { loadConfig, type GhostTextConfig } from "./config.ts";
 
 export interface PredictionContext {
@@ -8,139 +9,104 @@ export interface PredictionContext {
 	signal?: AbortSignal;
 }
 
+function shortContext(text: string, limit: number): string {
+	const value = text.trim();
+	if (value.length <= limit) return value;
+	const head = Math.ceil((limit - 5) / 2);
+	return `${value.slice(0, head)} ... ${value.slice(-(limit - 5 - head))}`;
+}
+
 export class GeminiPredictorClient {
 	private config: GhostTextConfig;
+	private requestId = 0;
+	private lastStatus = "Ready";
+	private latencyMs: number | undefined;
+	private requests = 0;
 
 	constructor(config?: GhostTextConfig) {
-		this.config = config ?? loadConfig();
+		this.config = { ...(config ?? loadConfig()) };
 	}
 
-	public updateConfig(newConfig: Partial<GhostTextConfig>): void {
-		this.config = { ...this.config, ...newConfig };
+	updateConfig(config: Partial<GhostTextConfig>): void {
+		this.config = { ...this.config, ...config };
+		this.requestId++;
+		this.lastStatus = "Ready";
+		this.latencyMs = undefined;
 	}
 
-	public getConfig(): GhostTextConfig {
+	getConfig(): GhostTextConfig {
 		return { ...this.config };
 	}
 
-	public async predict(ctx: PredictionContext): Promise<string | null> {
-		if (!this.config.enabled) return null;
-		if (!this.config.baseUrl || !this.config.apiKey) {
-			return this.fallbackHeuristic(ctx);
-		}
-
-		const isCompletingInput = Boolean(ctx.currentInput && ctx.currentInput.trim().length > 0);
-		const systemPrompt = isCompletingInput
-			? "You are a copilot predicting user input in a coding agent CLI. The user is actively typing. Predict the exact continuation/completion of what the user is typing. Return ONLY the continuation suffix text (do NOT repeat what the user already typed). Keep it brief (under 15 words). No quotes, backticks, or markdown."
-			: "You are a copilot predicting the user's next message or action in a coding agent CLI. Based on the conversation context, predict the most probable next command, query, or instruction the user would give. Return ONLY a single concise prompt (2 to 10 words). No quotes, backticks, or explanation.";
-
-		// Truncate messages to save tokens and latency
-		const truncate = (str: string | undefined, maxChars: number) => {
-			if (!str) return "";
-			const s = str.trim();
-			return s.length > maxChars ? s.slice(-maxChars) : s;
-		};
-
-		const contextParts: string[] = [];
-		if (ctx.lastUserMessage) {
-			contextParts.push(`Previous user request: ${truncate(ctx.lastUserMessage, 200)}`);
-		}
-		if (ctx.lastToolsSummary) {
-			contextParts.push(`Tool actions executed: ${truncate(ctx.lastToolsSummary, 200)}`);
-		}
-		if (ctx.lastAssistantMessage) {
-			contextParts.push(`Last assistant reply: ${truncate(ctx.lastAssistantMessage, 300)}`);
-		}
-		if (isCompletingInput) {
-			contextParts.push(`User has currently typed: "${ctx.currentInput}"`);
-		}
-
-		const userContent = contextParts.join("\n\n");
-		if (!userContent) {
-			return null;
-		}
-
-		try {
-			const timeoutSignal = AbortSignal.timeout(this.config.timeoutMs);
-			const combinedSignal = ctx.signal ? AbortSignal.any([ctx.signal, timeoutSignal]) : timeoutSignal;
-
-			const url = `${this.config.baseUrl}/chat/completions`;
-			const resp = await fetch(url, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${this.config.apiKey}`,
-				},
-				body: JSON.stringify({
-					model: this.config.model,
-					messages: [
-						{ role: "system", content: systemPrompt },
-						{ role: "user", content: userContent },
-					],
-					temperature: this.config.temperature,
-					max_tokens: this.config.maxTokens,
-				}),
-				signal: combinedSignal,
-			});
-
-			if (!resp.ok) {
-				return this.fallbackHeuristic(ctx);
-			}
-
-			const data = (await resp.json()) as any;
-			let content = data?.choices?.[0]?.message?.content;
-			if (typeof content !== "string") return null;
-
-			// Clean up output
-			content = content.trim();
-			content = content.replace(/^["'`]+|["'`]+$/g, "").trim();
-			// Take first line only
-			content = content.split("\n")[0]?.trim() || "";
-
-			// If completing input and model repeated what user typed, strip user typed prefix
-			if (isCompletingInput && ctx.currentInput) {
-				const input = ctx.currentInput;
-				if (content.toLowerCase().startsWith(input.toLowerCase())) {
-					content = content.slice(input.length);
-				}
-			}
-
-			return content || null;
-		} catch {
-			return this.fallbackHeuristic(ctx);
-		}
+	getStatus(): { reason: string; latencyMs: number | undefined; requests: number } {
+		const reason = !this.config.enabled ? "Disabled" : !this.config.baseUrl ? "Missing base URL" : !this.config.apiKey ? "Missing API key" : this.lastStatus;
+		return { reason, latencyMs: this.latencyMs, requests: this.requests };
 	}
 
-	private fallbackHeuristic(ctx: PredictionContext): string | null {
-		const assistant = (ctx.lastAssistantMessage || "").toLowerCase();
-		const typed = ctx.currentInput || "";
+	async predict(ctx: PredictionContext): Promise<string | null> {
+		if (!this.config.enabled || !this.config.baseUrl || !this.config.apiKey || ctx.signal?.aborted) return null;
+		const completing = !!ctx.currentInput?.trim();
+		const systemPrompt = completing
+			? "Predict the exact continuation suffix of the user's input in a coding agent CLI. Do not repeat the input. Keep it brief, under 15 words. Return only the suffix, including necessary leading spaces. No quotes, backticks, markdown, or explanation."
+			: "Predict the user's next message in a coding agent CLI. Return only one concise prompt, 2 to 10 words, with no quotes, backticks, or explanation.";
+		const instructions = `${systemPrompt} Use the same language as the user's natural-language input. Preserve commands, paths, and code identifiers as written. Return an empty response if the intent is unclear. Do not propose commits, deletions, or other consequential actions unless requested by the user.`;
+		const parts: string[] = [];
+		if (ctx.lastUserMessage) parts.push(`Previous user request: ${shortContext(ctx.lastUserMessage, 200)}`);
+		if (ctx.lastToolsSummary) parts.push(`Tool actions executed: ${shortContext(ctx.lastToolsSummary, 200)}`);
+		if (ctx.lastAssistantMessage) parts.push(`Last assistant reply: ${shortContext(ctx.lastAssistantMessage, 300)}`);
+		if (completing) parts.push(`User has currently typed: ${JSON.stringify(ctx.currentInput)}`);
+		if (!parts.length) return null;
 
-		if (!typed) {
-			if (assistant.includes("fail") || assistant.includes("error") || assistant.includes("失败") || assistant.includes("报错")) {
-				return "修复报错并重新测试";
+		const id = ++this.requestId;
+		const started = Date.now();
+		const timeout = AbortSignal.timeout(this.config.timeoutMs);
+		const signal = ctx.signal ? AbortSignal.any([ctx.signal, timeout]) : timeout;
+		let status = "No suggestion";
+		this.lastStatus = "Requesting";
+		this.requests++;
+		try {
+			const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.config.apiKey}` },
+				body: JSON.stringify({ model: this.config.model, messages: [{ role: "system", content: instructions }, { role: "user", content: parts.join("\n\n") }], temperature: this.config.temperature, max_tokens: this.config.maxTokens }),
+				signal,
+			});
+			if (signal.aborted) {
+				status = ctx.signal?.aborted ? "Cancelled" : "Timed out";
+				return null;
 			}
-			if (assistant.includes("test") || assistant.includes("测试") || assistant.includes("passed")) {
-				return "git status";
+			if (id !== this.requestId) return null;
+			if (!response.ok) {
+				status = `HTTP ${response.status}`;
+				return null;
 			}
-			if (assistant.includes("git") || assistant.includes("modified") || assistant.includes("修改")) {
-				return "查看改动 diff";
+			const data = await response.json() as { choices?: { message?: { content?: unknown } }[] } | null;
+			const raw = data?.choices?.[0]?.message?.content;
+			if (signal.aborted) {
+				status = ctx.signal?.aborted ? "Cancelled" : "Timed out";
+				return null;
 			}
-			return "继续下一步";
+			if (id !== this.requestId) return null;
+			if (typeof raw !== "string") {
+				status = "Invalid response";
+				return null;
+			}
+			let content = (raw.split(/\r?\n/)[0] ?? "").trimEnd();
+			if (content.length >= 2 && ["\"", "'", "`"].includes(content[0]!) && content.at(-1) === content[0]) content = content.slice(1, -1).trimEnd();
+			if (completing && ctx.currentInput && content.toLowerCase().startsWith(ctx.currentInput.toLowerCase())) content = content.slice(ctx.currentInput.length);
+			if (!completing) content = content.trimStart();
+			content = content.replaceAll("\t", "    ");
+			if (!content.trim() || visibleWidth(content) === 0 || /[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(content)) return null;
+			status = "Last request succeeded";
+			return content;
+		} catch {
+			status = ctx.signal?.aborted ? "Cancelled" : timeout.aborted ? "Timed out" : "Request failed";
+			return null;
+		} finally {
+			if (id === this.requestId) {
+				this.lastStatus = status;
+				this.latencyMs = Date.now() - started;
+			}
 		}
-
-		// When typing
-		if (typed === "g" || typed === "git") {
-			return " status";
-		}
-		if (typed === "npm" || typed === "npm ") {
-			return "run check";
-		}
-		if (typed === "查看") {
-			return " git diff";
-		}
-		if (typed === "修复") {
-			return "当前报错";
-		}
-		return null;
 	}
 }

@@ -32,9 +32,10 @@ export function injectGhostTextIntoLine(
 		showHint?: boolean;
 		dimColor?: string;
 		hintColor?: string;
+		styleGhost?: (text: string) => string;
 	}
 ): string {
-	if (!ghostText || lineWidth <= 0) return line;
+	if (!ghostText || lineWidth <= 0 || visibleWidth(ghostText) <= 0) return line;
 
 	const cursorPattern = "\x1b[7m \x1b[0m";
 	const cursorIndex = line.indexOf(cursorPattern);
@@ -42,7 +43,7 @@ export function injectGhostTextIntoLine(
 		return line;
 	}
 
-	const beforeCursorAndCursor = line.slice(0, cursorIndex + cursorPattern.length);
+	const beforeCursor = line.slice(0, cursorIndex);
 	const afterCursor = line.slice(cursorIndex + cursorPattern.length);
 
 	// Count leading spaces in afterCursor (which is the padding)
@@ -58,8 +59,8 @@ export function injectGhostTextIntoLine(
 
 	const trailingContent = afterCursor.slice(leadingSpacesCount);
 
-	// Determine how much visible width is available for ghost text + hint
-	const availableWidth = leadingSpacesCount;
+	// Reusing the cursor cell (1 col) + padding spaces
+	const availableWidth = 1 + leadingSpacesCount;
 
 	const showHint = options?.showHint ?? false;
 	const hintText = showHint ? " (Tab)" : "";
@@ -89,12 +90,12 @@ export function injectGhostTextIntoLine(
 	const usedWidth = visibleWidth(formattedGhost) + visibleWidth(formattedHint);
 	const remainingSpaces = Math.max(0, availableWidth - usedWidth);
 
-	const dimColor = options?.dimColor ?? "\x1b[90m"; // Dim gray
-	const hintColor = options?.hintColor ?? "\x1b[38;5;242m"; // Subtle gray
+	const dimColor = options?.dimColor ?? "\x1b[2m";
+	const hintColor = options?.hintColor ?? dimColor;
 	const reset = "\x1b[0m";
 
-	const renderedGhost = `${dimColor}${formattedGhost}${reset}`;
+	const renderedGhost = options?.styleGhost ? options.styleGhost(formattedGhost) : `${dimColor}${formattedGhost}${reset}`;
 	const renderedHint = formattedHint ? `${hintColor}${formattedHint}${reset}` : "";
 
-	return `${beforeCursorAndCursor}${renderedGhost}${renderedHint}${" ".repeat(remainingSpaces)}${trailingContent}`;
+	return `${beforeCursor}${renderedGhost}${renderedHint}${" ".repeat(remainingSpaces)}${trailingContent}`;
 }
